@@ -9,27 +9,21 @@ _envs: &envs
   PROXY_PORT: "9002"
   # RemotePDServer 按每个实例的 dp*tp 顺序切片：P 取 0-3，D 取 4-7
   ASCEND_RT_VISIBLE_DEVICES: "0,1,2,3,4,5,6,7"
-  HCCL_IF_IP: "127.0.0.1"
-  GLOO_SOCKET_IFNAME: "hiainet0"
-  TP_SOCKET_IFNAME: "hiainet0"
-  HCCL_SOCKET_IFNAME: "hiainet0"
-  HCCL_ALGO: "level0:fullmesh"
+  # 同机两个 vllm 实例靠 pd_server_envs 里的 HCCL_IF_BASE_PORT / HCCL_HOST_SOCKET_PORT_RANGE
+  # 错开端口；NPU 侧端口统一交给 HCCL 自选（与单机 A5 基线、Kimi 同机 PD 用例一致）。
+  HCCL_NPU_SOCKET_PORT_RANGE: "auto"
   VLLM_RPC_TIMEOUT: "3600000"
   VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "30000"
   OMP_PROC_BIND: "false"
   OMP_NUM_THREADS: "10"
   PYTORCH_NPU_ALLOC_CONF: "expandable_segments:True"
   TASK_QUEUE_ENABLE: "1"
-  # ---- A5 + MemCache 池化 ----
   PYTHONHASHSEED: "0"
-  ACL_OP_INIT_MODE: "1"
-  ASCEND_LOCAL_COMM_RES: '{"version":"1.3"}'
-  ASCEND_LOCAL_COMM_RES_PATH: "/etc/hixlep/"
   # MMC_LOCAL_CONFIG_PATH 由 kv_pool 管理器生成并注入，不要在此手写
 
 test_cases:
   - name: "DeepSeek-V4-Flash-A5-Single-PD-Memcache-128k-1k-PC90-Perf"
-    model: "/mnt/weight/A5-weights/DeepSeek-V4-Flash"
+    model: "/root/.cache/modelscope/hub/models/deepseek-ai/DeepSeek-V4-Flash"
     service_mode: pd
     envs:
       <<: *envs
@@ -48,16 +42,24 @@ test_cases:
           ock.mmc.local_service.dram.size: 40GB
           ock.mmc.local_service.max.dram.size: 2048GB
     # 只放两实例不同的 env；卡号不要写这里，会被 RemotePDServer 覆盖
+    # 同机双实例必须给 P/D 分配不同的 HCCL_IF_BASE_PORT + HCCL_HOST_SOCKET_PORT_RANGE，
+    # 否则两实例默认端口相同，首个集合通信（profile_run 的 AllGather）会以
+    # EI0006 Communication_Error_Get_Socket 建链超时退出。
+    # 该写法与 Kimi-K3.1-Pro-W4A8-A3-1M-PD 同机 PD 用例一致。
     pd_server_envs:
-      - HCCL_EXEC_TIMEOUT: "204"
+      - HCCL_IF_BASE_PORT: "51000"
+        HCCL_HOST_SOCKET_PORT_RANGE: "51000-51063"
+        HCCL_EXEC_TIMEOUT: "204"
         HCCL_CONNECT_TIMEOUT: "120"
         HCCL_BUFFSIZE: "512"
-      - HCCL_EXEC_TIMEOUT: "2040"
+      - HCCL_IF_BASE_PORT: "50000"
+        HCCL_HOST_SOCKET_PORT_RANGE: "50000-50063"
+        HCCL_EXEC_TIMEOUT: "2040"
         HCCL_CONNECT_TIMEOUT: "1200"
         HCCL_BUFFSIZE: "1024"
     pd_server_cmds:
       # ---------------- Prefiller (kv_producer) ----------------
-      - - "/mnt/weight/A5-weights/DeepSeek-V4-Flash"
+      - - "/root/.cache/modelscope/hub/models/deepseek-ai/DeepSeek-V4-Flash"
         - "--host"
         - "127.0.0.1"
         - "--port"
@@ -104,7 +106,7 @@ test_cases:
         - "--additional_config"
         - '{"enable_cpu_binding": "True", "multistream_overlap_shared_expert": true}'
       # ---------------- Decoder (kv_consumer) ----------------
-      - - "/mnt/weight/A5-weights/DeepSeek-V4-Flash"
+      - - "/root/.cache/modelscope/hub/models/deepseek-ai/DeepSeek-V4-Flash"
         - "--host"
         - "127.0.0.1"
         - "--port"
